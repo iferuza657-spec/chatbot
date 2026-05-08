@@ -3,7 +3,7 @@ import re
 import requests
 from groq import Groq
 from dotenv import load_dotenv
-from telegram import Update, BotCommand
+from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     MessageHandler,
@@ -33,7 +33,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎤 Ovozli xabar — AI tinglab javob beradi\n"
         "🖼️ Rasm yuboring — AI tasvirlab beradi\n"
         "📊 Prezentatsiya — 'prezentatsiya yasa: mavzu' yozing\n"
-        "📄 Word hujjat — 'word yas: mavzu' yozing\n\n"
+        "📄 Word hujjat — 'word yasa: mavzu' yozing\n"
+        "🔍 Kanal qidirish — 'kanal top: mavzu' yozing\n\n"
         "/help — yordam\n"
         "/reset — suhbatni tozalash"
     )
@@ -45,9 +46,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/reset — Suhbat tarixini tozalash\n"
         "/help — Yordam\n\n"
         "📊 Prezentatsiya yasash:\n"
-        "  'prezentatsiya yasa: sun quyosh haqida'\n\n"
+        "  'prezentatsiya yasa: quyosh haqida'\n\n"
         "📄 Word hujjat yasash:\n"
-        "  'word yasa: rezyume'\n"
+        "  'word yasa: rezyume'\n\n"
+        "🔍 Kanal qidirish:\n"
+        "  'kanal top: dasturlash'\n"
+        "  'kanal top: musiqa'\n"
     )
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -60,33 +64,26 @@ def create_pptx(topic, slides_data):
     prs.slide_width = Inches(13.33)
     prs.slide_height = Inches(7.5)
 
-    # Rang palitrasi
     DARK_BG = RGBColor(18, 18, 40)
     ACCENT = RGBColor(99, 102, 241)
     WHITE = RGBColor(255, 255, 255)
     LIGHT_GRAY = RGBColor(200, 200, 220)
 
     for i, slide_info in enumerate(slides_data):
-        slide_layout = prs.slide_layouts[6]  # Blank
+        slide_layout = prs.slide_layouts[6]
         slide = prs.slides.add_slide(slide_layout)
 
-        # Fon
         bg = slide.background
         fill = bg.fill
         fill.solid()
         fill.fore_color.rgb = DARK_BG
 
-        # Chiziq bezak
-        from pptx.util import Emu
-        line = slide.shapes.add_shape(
-            1, Inches(0), Inches(0), Inches(13.33), Inches(0.08)
-        )
+        line = slide.shapes.add_shape(1, Inches(0), Inches(0), Inches(13.33), Inches(0.08))
         line.fill.solid()
         line.fill.fore_color.rgb = ACCENT
         line.line.fill.background()
 
         if i == 0:
-            # Birinchi slayd — sarlavha
             title_box = slide.shapes.add_textbox(Inches(1), Inches(2.5), Inches(11), Inches(1.5))
             tf = title_box.text_frame
             tf.word_wrap = True
@@ -103,7 +100,6 @@ def create_pptx(topic, slides_data):
             p2.font.size = Pt(22)
             p2.font.color.rgb = ACCENT
         else:
-            # Oddiy slayd
             title_box = slide.shapes.add_textbox(Inches(0.6), Inches(0.3), Inches(11), Inches(1))
             tf = title_box.text_frame
             p = tf.paragraphs[0]
@@ -126,7 +122,6 @@ def create_pptx(topic, slides_data):
                     p2.font.color.rgb = LIGHT_GRAY
                     p2.space_after = Pt(8)
 
-        # Sahifa raqami
         num_box = slide.shapes.add_textbox(Inches(12.5), Inches(7.1), Inches(0.7), Inches(0.3))
         tf_n = num_box.text_frame
         p_n = tf_n.paragraphs[0]
@@ -140,11 +135,8 @@ def create_pptx(topic, slides_data):
 
 def create_docx(topic, content):
     doc = Document()
-
-    # Sarlavha
     title = doc.add_heading(topic, 0)
     title.runs[0].font.color.rgb = RGBColor(99, 102, 241)
-
     doc.add_paragraph("")
 
     lines = content.split("\n")
@@ -157,7 +149,7 @@ def create_docx(topic, content):
         elif line.startswith("#"):
             doc.add_heading(line.replace("#", "").strip(), level=1)
         elif line.startswith("•") or line.startswith("-") or line.startswith("*"):
-            p = doc.add_paragraph(line.lstrip("•-* "), style="List Bullet")
+            doc.add_paragraph(line.lstrip("•-* "), style="List Bullet")
         else:
             doc.add_paragraph(line)
 
@@ -165,13 +157,58 @@ def create_docx(topic, content):
     doc.save(filename)
     return filename
 
+async def find_channel(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
+    await update.message.reply_text(f"🔍 '{query}' bo'yicha kanallar qidirilmoqda...")
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+
+    prompt = f"""Telegram da '{query}' mavzusidagi mashhur va foydali kanallarni top.
+Faqat JSON formatida javob ber, boshqa hech narsa yozma:
+[
+  {{
+    "name": "Kanal nomi",
+    "username": "@kanalUsername",
+    "description": "Kanal haqida qisqa ma'lumot",
+    "link": "https://t.me/kanalUsername"
+  }}
+]
+5 ta kanal top. Haqiqiy va mavjud kanallarni yoz."""
+
+    try:
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw = resp.choices[0].message.content
+        raw = re.sub(r"```json|```", "", raw).strip()
+        import json
+        channels = json.loads(raw)
+
+        msg = f"📡 '{query}' bo'yicha kanallar:\n\n"
+        keyboard = []
+
+        for i, ch in enumerate(channels, 1):
+            name = ch.get("name", "Noma'lum")
+            desc = ch.get("description", "")
+            link = ch.get("link", "")
+            username = ch.get("username", "")
+
+            msg += f"{i}. **{name}** {username}\n📝 {desc}\n\n"
+            if link:
+                keyboard.append([InlineKeyboardButton(f"📢 {name}", url=link)])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode="Markdown")
+
+    except Exception as e:
+        await update.message.reply_text(f"Xatolik yuz berdi: {str(e)}")
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_text = update.message.text.strip()
 
-    # Prezentatsiya so'rovi
     pptx_triggers = ["prezentatsiya yasa", "prezentatsiya qil", "slayd yasa", "pptx yasa"]
     docx_triggers = ["word yasa", "word qil", "hujjat yasa", "docx yasa", "rezyume yasa"]
+    kanal_triggers = ["kanal top", "kanal qidir", "kanal izla", "kanal tap"]
 
     if any(user_text.lower().startswith(t) for t in pptx_triggers):
         topic = re.split(r"[:—\-]", user_text, 1)[-1].strip() or user_text
@@ -179,11 +216,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="upload_document")
 
         prompt = f"""'{topic}' mavzusida 6 ta slayd uchun kontent yarat.
-Faqat JSON formatida javob ber, boshqa hech narsa yozma:
+Faqat JSON formatida javob ber:
 [
   {{"title": "Sarlavha slayd", "content": "Qisqa tavsif"}},
-  {{"title": "Slayd 2 nomi", "content": "- nuqta 1\\n- nuqta 2\\n- nuqta 3"}},
-  ...
+  {{"title": "Slayd 2 nomi", "content": "- nuqta 1\\n- nuqta 2\\n- nuqta 3"}}
 ]"""
 
         try:
@@ -223,7 +259,11 @@ Sarlavhalar uchun # va ## ishlat. Ro'yxatlar uchun - ishlat. O'zbek tilida yoz."
             await update.message.reply_text(f"Xatolik: {str(e)}")
         return
 
-    # Oddiy xabar
+    if any(user_text.lower().startswith(t) for t in kanal_triggers):
+        query = re.split(r"[:—\-]", user_text, 1)[-1].strip() or user_text
+        await find_channel(update, context, query)
+        return
+
     if user_id not in user_histories:
         user_histories[user_id] = [
             {
