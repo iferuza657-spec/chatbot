@@ -1,5 +1,6 @@
 import os
 import re
+import subprocess
 import requests
 from groq import Groq
 from dotenv import load_dotenv
@@ -32,6 +33,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📝 Matn yozing — AI javob beradi\n"
         "🎤 Ovozli xabar — AI tinglab javob beradi\n"
         "🖼️ Rasm yuboring — AI tasvirlab beradi\n"
+        "🎵 Video yuboring — Audio ajratib beradi\n"
+        "⬇️ YouTube/Instagram link — Video yuklab beradi\n"
         "📊 Prezentatsiya — 'prezentatsiya yasa: mavzu' yozing\n"
         "📄 Word hujjat — 'word yasa: mavzu' yozing\n"
         "🔍 Kanal qidirish — 'kanal top: mavzu' yozing\n\n"
@@ -43,7 +46,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📌 Buyruqlar:\n\n"
         "/start — Botni boshlash\n"
-        "/reset — Suhbat tarixini tozalash\n"
         "/help — Yordam\n\n"
         "📊 Prezentatsiya yasash:\n"
         "  'prezentatsiya yasa: quyosh haqida'\n\n"
@@ -51,7 +53,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  'word yasa: rezyume'\n\n"
         "🔍 Kanal qidirish:\n"
         "  'kanal top: dasturlash'\n"
-        "  'kanal top: musiqa'\n"
+        "  'kanal top: musiqa'\n\n"
+        "⬇️ Video yuklab olish:\n"
+        "  YouTube yoki Instagram havolasini yuboring\n\n"
+        "🎵 Audio ajratish:\n"
+        "  Video fayl yuboring"
     )
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -191,7 +197,6 @@ Faqat JSON formatida javob ber, boshqa hech narsa yozma:
             desc = ch.get("description", "")
             link = ch.get("link", "")
             username = ch.get("username", "")
-
             msg += f"{i}. **{name}** {username}\n📝 {desc}\n\n"
             if link:
                 keyboard.append([InlineKeyboardButton(f"📢 {name}", url=link)])
@@ -201,6 +206,54 @@ Faqat JSON formatida javob ber, boshqa hech narsa yozma:
 
     except Exception as e:
         await update.message.reply_text(f"Xatolik yuz berdi: {str(e)}")
+
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    try:
+        video = update.message.video or update.message.document
+        file = await context.bot.get_file(video.file_id)
+        video_data = requests.get(file.file_path).content
+        with open("video.mp4", "wb") as f:
+            f.write(video_data)
+
+        await update.message.reply_text("🎵 Audio ajratilmoqda...")
+
+        subprocess.run([
+            'ffmpeg', '-i', 'video.mp4', '-q:a', '0', '-map', 'a', 'audio.mp3', '-y'
+        ])
+
+        with open("audio.mp3", "rb") as f:
+            await update.message.reply_audio(f, filename="audio.mp3", caption="🎵 Audio tayyor!")
+
+    except Exception as e:
+        await update.message.reply_text(f"Xatolik: {str(e)}")
+
+async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_text = update.message.text.strip()
+
+    instagram_patterns = ["instagram.com/reel", "instagram.com/p/"]
+    youtube_patterns = ["youtube.com", "youtu.be"]
+
+    if any(p in user_text for p in instagram_patterns + youtube_patterns):
+        await update.message.reply_text("⬇️ Video yuklanmoqda...")
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="upload_document")
+        try:
+            import yt_dlp
+            ydl_opts = {
+                'outtmpl': 'downloaded.%(ext)s',
+                'format': 'best[ext=mp4]/best',
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(user_text, download=True)
+                filename = ydl.prepare_filename(info)
+
+            with open(filename, "rb") as f:
+                await update.message.reply_video(f, caption="✅ Video tayyor!")
+
+        except Exception as e:
+            await update.message.reply_text(f"Xatolik: {str(e)}")
+    else:
+        await handle_message(update, context)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -214,14 +267,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         topic = re.split(r"[:—\-]", user_text, 1)[-1].strip() or user_text
         await update.message.reply_text(f"📊 '{topic}' bo'yicha prezentatsiya tayyorlanmoqda...")
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="upload_document")
-
         prompt = f"""'{topic}' mavzusida 6 ta slayd uchun kontent yarat.
 Faqat JSON formatida javob ber:
 [
   {{"title": "Sarlavha slayd", "content": "Qisqa tavsif"}},
   {{"title": "Slayd 2 nomi", "content": "- nuqta 1\\n- nuqta 2\\n- nuqta 3"}}
 ]"""
-
         try:
             resp = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
@@ -242,10 +293,8 @@ Faqat JSON formatida javob ber:
         topic = re.split(r"[:—\-]", user_text, 1)[-1].strip() or user_text
         await update.message.reply_text(f"📄 '{topic}' bo'yicha hujjat tayyorlanmoqda...")
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="upload_document")
-
         prompt = f"""'{topic}' mavzusida to'liq va professional hujjat yoz.
 Sarlavhalar uchun # va ## ishlat. Ro'yxatlar uchun - ishlat. O'zbek tilida yoz."""
-
         try:
             resp = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
@@ -352,9 +401,10 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_image))
+    app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
     print("Bot ishlamoqda... ✅")
     app.run_polling()
 
